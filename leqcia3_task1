@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation template for Aurora Serverless DB cluster.
+  Supports test/prod environments with different SecretsManager strategies.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: test
+    AllowedValues:
+      - test
+      - prod
+    Description: Deployment environment (test or prod)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the DB will be created
+
+  DbSubnetGroupId:
+    Type: String
+    Description: Name of the existing DB subnet group
+
+  MiddlewareInstanceSg:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for middleware instances that will connect to DB
+
+Conditions:
+  ProdEnv: !Equals [!Ref Environment, "prod"]
+  TestEnv: !Equals [!Ref Environment, "test"]
+
+Resources:
+  HardcodedDatabaseSecret:
+    Condition: TestEnv
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: "Database credentials (Test only!)"
+      SecretString:
+        Fn::ToJsonString:
+          username: "dbuser"
+          password: "dbpassword"
+      Tags:
+        - Key: "Env"
+          Value: !Ref Environment
+        - Key: "Name"
+          Value: !Sub "${Environment}-${AWS::StackName}-secret"
+
+  GeneratedDatabaseSecret:
+    Condition: ProdEnv
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: "Database credentials (Generated for Prod)"
+      GenerateSecretString:
+        SecretStringTemplate:
+          Fn::ToJsonString:
+            username: "dbuser"
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\\'
+      Tags:
+        - Key: "Env"
+          Value: !Ref Environment
+        - Key: "Name"
+          Value: !Sub "${Environment}-${AWS::StackName}-secret"
+
+  DatabaseSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Database security group"
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: "Env"
+          Value: !Ref Environment
+        - Key: "Name"
+          Value: !Sub "${Environment}-${AWS::StackName}-sg"
+
+  Database:
+    DeletionPolicy: !If [ProdEnv, Retain, Delete]
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora
+      EngineMode: serverless
+      DBSubnetGroupName: !Ref DbSubnetGroupId
+      ScalingConfiguration:
+        AutoPause: true
+        MinCapacity: 1
+        MaxCapacity: 1
+        SecondsUntilAutoPause: 300
+      MasterUsername:
+        Fn::If:
+          - ProdEnv
+          - !Sub "{{resolve:secretsmanager:${GeneratedDatabaseSecret}:SecretString:username}}"
+          - !Sub "{{resolve:secretsmanager:${HardcodedDatabaseSecret}:SecretString:username}}"
+      MasterUserPassword:
+        Fn::If:
+          - ProdEnv
+          - !Sub "{{resolve:secretsmanager:${GeneratedDatabaseSecret}:SecretString:password}}"
+          - !Sub "{{resolve:secretsmanager:${HardcodedDatabaseSecret}:SecretString:password}}"
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSg
+      Tags:
+        - Key: "Env"
+          Value: !Ref Environment
+        - Key: "Name"
+          Value: !Sub "${Environment}-${AWS::StackName}-cluster"
+
+  DatabaseSgIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref MiddlewareInstanceSg
+      GroupId: !Ref DatabaseSg
+
+Outputs:
+  DatabaseEndpointAddress:
+    Description: Database endpoint address
+    Value: !GetAtt Database.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseEndpointAddress"
+
+  DatabaseEndpointPort:
+    Description: Database endpoint port
+    Value: !GetAtt Database.Endpoint.Port
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseEndpointPort"
+
+  DbCredentials:
+    Description: Database credentials Secret ARN
+    Value: !If [ProdEnv, !Ref GeneratedDatabaseSecret, !Ref HardcodedDatabaseSecret]
+    Export:
+      Name: !Sub "${AWS::StackName}-DbCredentials"
