@@ -1,0 +1,25 @@
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      Tags:
+        - Key: FreeTierEligible
+          Value: true
+
+  MyVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      VolumeType: gp3
+      Tags:
+        - Key: Priority
+          Value: 5000
+
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+      Tags:
+        - Key: PublicAccessAllowed
+          Value: true
